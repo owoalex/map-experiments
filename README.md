@@ -5,5 +5,5 @@ Experiments with OpenStreetMap
 ```
 $ wget https://download.geofabrik.de/europe/britain-and-ireland-latest.osm.pbf
 $ ./extract-area.sh
-$ python3 render.py newport.osm
+$ python3 render.py cardiff.osm
 ```
