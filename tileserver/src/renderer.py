@@ -5,58 +5,63 @@ import math
 import uuid
 import json
 import db
+import couchbeans
 
-"""
-                  List of relations
-  Schema  |           Name           | Type  | Owner  
-----------+--------------------------+-------+--------
- public   | planet_osm_line          | table | grippy
- public   | planet_osm_nodes         | table | grippy
- public   | planet_osm_point         | table | grippy
- public   | planet_osm_polygon       | table | grippy
- public   | planet_osm_rels          | table | grippy
- public   | planet_osm_roads         | table | grippy
- public   | planet_osm_ways          | table | grippy
- public   | spatial_ref_sys          | table | grippy
- tiger    | addr                     | table | grippy
- tiger    | addrfeat                 | table | grippy
- tiger    | bg                       | table | grippy
- tiger    | county                   | table | grippy
- tiger    | county_lookup            | table | grippy
- tiger    | countysub_lookup         | table | grippy
- tiger    | cousub                   | table | grippy
- tiger    | direction_lookup         | table | grippy
- tiger    | edges                    | table | grippy
- tiger    | faces                    | table | grippy
- tiger    | featnames                | table | grippy
- tiger    | geocode_settings         | table | grippy
- tiger    | geocode_settings_default | table | grippy
- tiger    | loader_lookuptables      | table | grippy
- tiger    | loader_platform          | table | grippy
- tiger    | loader_variables         | table | grippy
- tiger    | pagc_gaz                 | table | grippy
- tiger    | pagc_lex                 | table | grippy
- tiger    | pagc_rules               | table | grippy
- tiger    | place                    | table | grippy
- tiger    | place_lookup             | table | grippy
- tiger    | secondary_unit_lookup    | table | grippy
- tiger    | state                    | table | grippy
- tiger    | state_lookup             | table | grippy
- tiger    | street_type_lookup       | table | grippy
- tiger    | tabblock                 | table | grippy
- tiger    | tabblock20               | table | grippy
- tiger    | tract                    | table | grippy
- tiger    | zcta5                    | table | grippy
- tiger    | zip_lookup               | table | grippy
- tiger    | zip_lookup_all           | table | grippy
- tiger    | zip_lookup_base          | table | grippy
- tiger    | zip_state                | table | grippy
- tiger    | zip_state_loc            | table | grippy
- topology | layer                    | table | grippy
- topology | topology                 | table | grippy
-(44 rows)
- 
-"""
+
+olc_alpha = "23456789CFGHJMPQRVWX"
+olc_inv_alpha = {}
+for idx, alph in enumerate(olc_alpha):
+    olc_inv_alpha[alph] = idx
+    
+def olc_to_bounds(olc):
+    llb = 0
+    lbb = 0
+    ebsx = 18 * 20**int(((len(olc) - 2) / 2))
+    ebsy = 9 * 20**int(((len(olc) - 2) / 2))
+    for level, group in enumerate([olc[i:i+2] for i in range(0, len(olc), 2)]):
+        bsx = 18 * 20**int(level)
+        bsy = 9 * 20**int(level)
+        lbb += olc_inv_alpha[group[0]] / bsy
+        llb += olc_inv_alpha[group[1]] / bsx
+        
+    #print(llb)
+    
+    latb = ((lbb) * 180) - 90
+    latt = ((lbb + (1/ebsy)) * 180) - 90
+    lonl = ((llb) * 360) - 180
+    lonr = ((llb + (1/ebsx)) * 360) - 180
+    return (latb, latt, lonl, lonr)
+
+def pos_to_olc(lat, lon, acc=4):
+    olc = ["2"] * acc
+    lat = (lat + 90) / 180
+    lon = (lon + 180) / 360
+    lat = lat * 9
+    lon = lon * 18
+    olc[0] = olc_alpha[math.floor(lat)]
+    olc[1] = olc_alpha[math.floor(lon)]
+    stp = 2
+    while stp < acc:
+        lat = (lat % 1) * 20
+        lon = (lon % 1) * 20
+        olc[stp + 0] = olc_alpha[math.floor(lat)]
+        olc[stp + 1] = olc_alpha[math.floor(lon)]
+        stp += 2
+    return "".join(olc)
+
+def frange(x, y, jump):
+    while x < y:
+        yield x
+        x += jump
+
+def bounds_to_olcs(bounds, olc_resolution=6):
+    latres = 180 / (9 * (20**((olc_resolution/2)-1)))
+    lonres = 360 / (18 * (20**((olc_resolution/2)-1)))
+    olcs = []
+    for lat in frange(bounds[0] - latres, bounds[1] + latres, latres):
+        for lon in frange(bounds[2] - lonres, bounds[3] + lonres, lonres):
+            olcs.append(pos_to_olc(lat, lon, olc_resolution))
+    return olcs
 
 class OSMPoint:
     lat = 0
@@ -90,9 +95,10 @@ class OSMWay:
             path_object.L(*(pt.as_xy_coords())) # Point
 
 class AreaRenderer:
-    point_map = {}
-    ways = {}
-    highways = []
+    point_map = None
+    ways = None
+    highways = None
+    scale_factors = None
 
     bound_top = 51.5709
     bound_left = -3.3062
@@ -102,75 +108,31 @@ class AreaRenderer:
     screen_space_x = 256
     screen_space_y = 256
     
-    scale_factors = {}
 
-    def load_xml(self, filename):
-        print("XML load start")
-        with open(filename, "rb") as f:
-            for event, element in etree.iterparse(f):
-                #print(f"{event}, {element.tag:>4}, {element.text}")
-                element_id = element.get("id")
-                if element.tag == "node":
-                    self.point_map[element_id] = OSMPoint(element.get("lat"), element.get("lon"), self)
-                if element.tag == "way":
-                    self.ways[element_id] = OSMWay()
-                    for prop in element.getchildren():
-                        if prop.tag == "nd":
-                            self.ways[element_id].point_refs.append(prop.get("ref"))
-                        if prop.tag == "tag":
-                            if prop.get("k") == "highway":
-                                self.ways[element_id].highway_type = prop.get("v")
-                                self.highways.append(element_id)
-                            if prop.get("k") == "bridge":
-                                self.ways[element_id].bridge = True
-                            if prop.get("k") == "ref":
-                                self.ways[element_id].ref = prop.get("ref")
-                            if prop.get("k") == "maxspeed":
-                                self.ways[element_id].maxspeed = prop.get("maxspeed")
-        
-        for way_id in self.ways:
-            for ptref in self.ways[way_id].point_refs:
-                if ptref in self.point_map:
-                    self.ways[way_id].add_point(self.point_map[ptref])
-        print("XML loaded")
-        return True
-                    
-    def load_pg(self, bt, bl, bb, br):
-        print("Postgres load start")
-        conn = db.get_postgres()
-        cur = conn.cursor()
-        query = "SELECT * FROM planet_osm_nodes WHERE lat>=" + str(int(bb * 10000000)) + " AND lat<=" + str(int(bt * 10000000)) + " AND lon>=" + str(int(bl * 10000000)) + " AND lon<=" + str(int(br * 10000000))
-        #print(query)
-        cur.execute(query)
-        
-        nodes = cur.fetchall()
-        inner_query = "SELECT * FROM planet_osm_ways WHERE nodes && ARRAY["
-        for node in nodes:
-            inner_query += str(node[0]) + "," # get node id
-        
-        inner_query = inner_query[:-1] + "]"
-        print(inner_query)
-        
-        cur.execute(inner_query)
-        ways = cur.fetchall()
-        for way in ways:
-            print(way)
-        
-        #cols = cur.description
-        #for row in rows:
-            #dictrow = {}
-            #for idx in range(0, len(cols)):
-            #    print(cols[idx].name)
-            #    dictrow[cols[idx].name] = row[idx]
-            #print(json.dumps(dictrow, indent=4))
-            #break;
-            #if not dictrow["highway"] is None:
-            #    print(json.dumps(dictrow, indent=4))
-            #break;
-        
-        conn.commit()
-        print("Postgres loaded")
-        return True
+    
+    couch_base_uri = ""
+
+    def load_couch(self, bounds):
+        olcs = bounds_to_olcs(bounds, 8)
+        couch = couchbeans.CouchClient(self.couch_base_uri)
+        print("Loading " + json.dumps(olcs))
+        all_ways = []
+        for olc in olcs:
+            try:
+                in_doc = couch.get_document("grippy_segments", olc)
+                all_ways.extend(in_doc["ways"])
+            except couchbeans.exceptions.CouchHTTPError as e:
+                print("Could not load " + olc)
+                pass
+        #print(all_ways)
+        for way_def in all_ways:
+            way = OSMWay()
+            for point_def in way_def["path"]:
+                way.add_point(OSMPoint(point_def[0], point_def[1],self))
+            way.highway_type = way_def["type"]
+            self.ways[way_def["id"]] = way
+            if way_def["is_highway"]:
+                self.highways.append(way_def["id"])
 
     def calc_scale_factors(self, bt, bl, bb, br):
         lat_delta = bb - bt
@@ -222,7 +184,8 @@ class AreaRenderer:
     def render_area(self):
         #self.load_xml("cardiff.osm")
         #print("XML loaded")
-        self.load_pg(self.bound_top, self.bound_left, self.bound_bottom, self.bound_right)
+        self.load_couch([self.bound_bottom, self.bound_top, self.bound_left, self.bound_right])
+        #print(self.highways)
         
         drawing = drawsvg.Drawing(self.screen_space_x, self.screen_space_y, origin='center')
         
@@ -321,5 +284,9 @@ class AreaRenderer:
         
         return tile_id
         
-    def __init__(self):
-        pass
+    def __init__(self, couch_base_uri):
+        self.couch_base_uri = couch_base_uri
+        self.point_map = {}
+        self.ways = {}
+        self.highways = []
+        self.scale_factors = {}

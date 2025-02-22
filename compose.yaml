@@ -36,6 +36,18 @@ services:
     networks:
       - private
       
+  couchdb:
+    image: couchdb:3.4.2
+    container_name: grippymap-couchdb
+    ports:
+      - 5984:5984
+    networks:
+      - private
+      - public
+    volumes:
+      - couchdb:/opt/couchdb/data
+      - ./config/couchdb:/opt/couchdb/etc/local.d
+      
   postgis:
     image: postgis/postgis:17-master
     container_name: grippymap-postgis
@@ -58,3 +70,4 @@ networks:
 
 volumes:
   postgres:
+  couchdb:

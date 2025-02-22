@@ -1,10 +1,15 @@
-from flask import Blueprint, request, Response, make_response, send_file, redirect
+from flask import Blueprint, request, Response, make_response, send_file, redirect, render_template
 import json
 from renderer import AreaRenderer
 import traceback
+from db import get_couch_base_uri
 
 
 tile_serving_api = Blueprint("tile_serving_api", __name__)
+
+@tile_serving_api.route("/slippymap", methods=['GET'])
+def demo_map():
+    return render_template("slippy.html")
 
 @tile_serving_api.route("/slippytiles/<zoom>/<x>/<y>", methods=['GET'])
 def serve_tile(zoom, x, y):
@@ -20,7 +25,7 @@ def serve_tile(zoom, x, y):
                     "msg": "Can only generate .svg and .png tiles"
                 }), status=400, mimetype='application/json')
             
-        renderer = AreaRenderer()
+        renderer = AreaRenderer(get_couch_base_uri())
         renderer.set_slippy_area(x, y, zoom)
         tile_id = renderer.render_area()
         if tile_id is None:

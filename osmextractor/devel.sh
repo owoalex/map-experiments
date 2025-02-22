@@ -7,10 +7,7 @@ else
 fi
 source .env
 cd ../
-docker compose up -d postgis
-export POSTGRES_DB=$POSTGRES_DB
-export POSTGRES_USER=$POSTGRES_USER
-export POSTGRES_PASSWORD=$POSTGRES_PASSWORD
-export POSTGRES_HOST="localhost"
+docker compose up -d couchdb
+export GRIPPY_CONFIG_FILE="../../config/grippymap-devel.json"
 cd osmextractor/src
 python3 main.py
