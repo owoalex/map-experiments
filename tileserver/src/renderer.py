@@ -80,6 +80,28 @@ class OSMWay:
     highway_type = "path"
     bridge = False
     maxspeed = "60 mph"
+    names = None
+    ref = None
+    
+    def __init__(self):
+        self.points = []
+        self.point_refs = []
+        self.names = {}
+    
+    def add_point(self, point):
+        self.points.append(point)
+        
+    def get_central_screen_space_coords(self):
+        return self.points[int(len(self.points) / 2)].as_xy_coords()
+        
+    def plot_on_path(self, path_object):
+        path_object.M(*(self.points[0].as_xy_coords())) # Start
+        for pt in self.points[1:]:
+            path_object.L(*(pt.as_xy_coords())) # Point
+            
+class OSMArea:
+    area_type = "path"
+    maxspeed = "60 mph"
     ref = None
     
     def __init__(self):
@@ -93,12 +115,16 @@ class OSMWay:
         path_object.M(*(self.points[0].as_xy_coords())) # Start
         for pt in self.points[1:]:
             path_object.L(*(pt.as_xy_coords())) # Point
+        path_object.Z()
 
 class AreaRenderer:
     point_map = None
     ways = None
     highways = None
+    areas = None
+    otherways = None
     scale_factors = None
+    zoom_level = 16
 
     bound_top = 51.5709
     bound_left = -3.3062
@@ -113,26 +139,78 @@ class AreaRenderer:
     couch_base_uri = ""
 
     def load_couch(self, bounds):
-        olcs = bounds_to_olcs(bounds, 8)
+        olcs = []
+        priority_limit = 0
+        if self.zoom_level <= 5:
+            olcs = bounds_to_olcs(bounds, 4)
+            priority_limit = 32
+        if self.zoom_level <= 7:
+            olcs = bounds_to_olcs(bounds, 4)
+            priority_limit = 32
+        elif self.zoom_level <= 9:
+            olcs = bounds_to_olcs(bounds, 4)
+            priority_limit = 24
+        elif self.zoom_level <= 11:
+            olcs = bounds_to_olcs(bounds, 4)
+            priority_limit = 16
+        elif self.zoom_level <= 13:
+            olcs = bounds_to_olcs(bounds, 6)
+            priority_limit = 8
+        elif self.zoom_level <= 15:
+            olcs = bounds_to_olcs(bounds, 8)
+            priority_limit = 6
+        elif self.zoom_level <= 16:
+            olcs = bounds_to_olcs(bounds, 8)
+            priority_limit = 2
+        else:
+            olcs = bounds_to_olcs(bounds, 8)
         couch = couchbeans.CouchClient(self.couch_base_uri)
         print("Loading " + json.dumps(olcs))
-        all_ways = []
+        all_highways = []
+        all_areas = []
+        other_ways = []
         for olc in olcs:
             try:
-                in_doc = couch.get_document("grippy_segments", olc)
-                all_ways.extend(in_doc["ways"])
+                in_doc = couch.get_document("grippy_highways", olc)
+                all_highways.extend(in_doc["highways"])
+                in_doc = couch.get_document("grippy_areas", olc)
+                all_areas.extend(in_doc["areas"])
+                other_ways.extend(in_doc["other"])
             except couchbeans.exceptions.CouchHTTPError as e:
-                print("Could not load " + olc)
+                #print("Could not load " + olc)
                 pass
+        
+        print("Loaded " + str(len(all_highways)) + " highway segments")
         #print(all_ways)
-        for way_def in all_ways:
-            way = OSMWay()
-            for point_def in way_def["path"]:
-                way.add_point(OSMPoint(point_def[0], point_def[1],self))
-            way.highway_type = way_def["type"]
-            self.ways[way_def["id"]] = way
-            if way_def["is_highway"]:
+        for way_def in all_highways:
+            if way_def["priority"] >= priority_limit:
+                way = OSMWay()
+                for point_def in way_def["path"]:
+                    way.add_point(OSMPoint(point_def[0], point_def[1],self))
+                way.highway_type = way_def["type"]
+                way.bridge = way_def["is_bridge"]
+                way.ref = way_def["ref"]
+                way.names = way_def["names"]
+                self.ways[way_def["id"]] = way
                 self.highways.append(way_def["id"])
+        
+        for way_def in all_areas:
+            if way_def["priority"] >= priority_limit:
+                area = OSMArea()
+                for point_def in way_def["path"]:
+                    area.add_point(OSMPoint(point_def[0], point_def[1],self))
+                area.area_type = way_def["type"]
+                self.ways[way_def["id"]] = area
+                self.areas.append(way_def["id"])
+            
+        for way_def in other_ways:
+            if way_def["priority"] >= priority_limit:
+                way = OSMWay()
+                for point_def in way_def["path"]:
+                    way.add_point(OSMPoint(point_def[0], point_def[1],self))
+                way.highway_type = way_def["type"]
+                self.ways[way_def["id"]] = way
+                self.otherways.append(way_def["id"])
 
     def calc_scale_factors(self, bt, bl, bb, br):
         lat_delta = bb - bt
@@ -178,6 +256,8 @@ class AreaRenderer:
         self.bound_bottom = lat_deg_h
         self.bound_right = lon_deg_h
         
+        self.zoom_level = int(zoom)
+        
         self.scale_factors = self.calc_scale_factors(self.bound_top, self.bound_left, self.bound_bottom, self.bound_right)
         
     
@@ -191,10 +271,35 @@ class AreaRenderer:
         
         wayct = 0
         
-        layers = {}
-        layer_order = ["background", "path", "road_outlines", "tertiary_link", "secondary_link", "tertiary", "primary_link", "trunk_link", "secondary", "motorway_link", "primary", "trunk", "motorway", "bridge_base", "bridge_outline", "bridge"]
+        layers = {}        
+        layer_order = [
+                "background", 
+                "area_background_features",
+                "natural",
+                "building",
+                "path", 
+                "road_outlines", 
+                "residential",
+                "tertiary_link", 
+                "secondary_link", 
+                "tertiary", 
+                "primary_link", 
+                "trunk_link", 
+                "secondary", 
+                "motorway_link", 
+                "primary", 
+                "trunk", 
+                "motorway", 
+                "bridge_base", 
+                "bridge_outline", 
+                "bridge",
+                "label_outlines",
+                "labels"
+            ]
+        
         path_base_colors = {
                 "path": "#dddddd",
+                "residential": "#ffffff",
                 "tertiary": "#ffffff",
                 "secondary": "#f3ef14",
                 "primary": "#e10f1c",
@@ -206,9 +311,33 @@ class AreaRenderer:
                 "trunk_link": "#349843",
                 "motorway_link": "#0871b9"
             }
-        rsf = 1
+        
+        area_base_colors = {
+                "default": "#eef4eb",
+                "building": "#d6ceb8",
+                "grassland": "#d9f1cf", 
+                "heath": "#d9f1cf", 
+                "wood": "#add19e", 
+                "beach": "#fff1ba", 
+                "sand": "#fff1ba", 
+                "water": "#aad3df",
+                "residential_area": "#e9e0ca",
+                "commercial_area": "#fce9d0",
+                "service_area": "#86a9c1",
+                "industrial_area": "#c3c5c7"
+            }
+        rsf = 2
+        if self.zoom_level >= 16:
+            rsf = 3
+        if self.zoom_level >= 17:
+            rsf = 5
+        if self.zoom_level >= 18:
+            rsf = 8
+        if self.zoom_level >= 19:
+            rsf = 12
         path_base_widths = {
                 "path": 1 * rsf,
+                "residential": 1.25 * rsf,
                 "tertiary": 2 * rsf,
                 "secondary": 3 * rsf,
                 "primary": 4 * rsf,
@@ -220,11 +349,52 @@ class AreaRenderer:
                 "trunk_link": 2 * rsf,
                 "motorway_link": 2.5 * rsf
             }
+        if self.zoom_level <= 14:
+            path_base_widths["residential"] = 0.75 * rsf
+            
         for layer_name in layer_order:
             layers[layer_name] = []
         
-        pt_types = ["motorway", "motorway_link", "trunk_link", "trunk", "secondary_link", "primary", "secondary_link", "secondary", "tertiary_link", "tertiary", "areas"]
-        outline_types = ["tertiary_link", "tertiary"]
+        pt_types = ["motorway", "motorway_link", "trunk_link", "trunk", "secondary_link", "primary", "secondary_link", "secondary", "tertiary_link", "tertiary", "residential", "areas"]
+        outline_types = ["tertiary_link", "tertiary", "residential"]
+        pt_area_types = ["building"]
+        natural_area_types = ["grassland", "heath", "wood", "beach", "sand", "water"]
+        
+        
+        for way_id in self.areas:
+            way = self.ways[way_id]
+            if len(way.points) >= 2:
+                area_category = "area_background_features"
+                area_fill = "default"
+                if way.area_type in pt_area_types:
+                    area_category = way.area_type
+                    area_fill = way.area_type
+                
+                if way.area_type in natural_area_types:
+                    area_category = "natural"
+                    area_fill = way.area_type
+                    
+                if way.area_type == "residential":
+                    area_category = "area_background_features"
+                    area_fill = "residential_area"
+                elif way.area_type == "commercial":
+                    area_category = "area_background_features"
+                    area_fill = "commercial_area"
+                elif way.area_type == "industrial":
+                    area_category = "area_background_features"
+                    area_fill = "industrial_area"
+                elif way.area_type == "services":
+                    area_category = "area_background_features"
+                    area_fill = "service_area"
+                    
+                    
+                
+                path = drawsvg.Path(fill=area_base_colors[area_fill], fill_opacity=1, stroke_opacity=0)
+                way.plot_on_path(path)
+                layers[area_category].append(path)
+        
+        ref_labels = []
+        name_labels = []
         
         for way_id in self.highways:
             way = self.ways[way_id]
@@ -236,8 +406,12 @@ class AreaRenderer:
                     path_type = way.highway_type
                 elif way.highway_type == "unclassified":
                     path_type = "tertiary"
-                elif way.highway_type == "residential":
-                    path_type = "tertiary"
+                elif way.highway_type == "service":
+                    path_type = "residential"
+                
+                if self.zoom_level <= 14:
+                    if path_type == "residential":
+                        path_type = "path"
                     
                 layer_name = path_type
                 
@@ -246,26 +420,99 @@ class AreaRenderer:
                 #if path_type.endswith("_link"):
                 #    layer_name = path_type[:-5]
                 
-                if way.bridge:
-                    path = drawsvg.Path(stroke_width=path_base_widths[path_type] + (2 * rsf), stroke="#000000", fill_opacity=0, stroke_opacity=1)
-                    way.plot_on_path(path)
-                    layers["bridge_outline"].append(path)
-                    path = drawsvg.Path(stroke_width=path_base_widths[path_type] + (4 * rsf), stroke="#ffffff", fill_opacity=0, stroke_opacity=1)
-                    way.plot_on_path(path)
-                    layers["bridge_base"].append(path)
+                if self.zoom_level >= 17:
+                    if way.bridge:
+                        path = drawsvg.Path(stroke_width=path_base_widths[path_type] + (2 * rsf), stroke="#000000", stroke_linejoin="round", fill_opacity=0, stroke_opacity=0.5)
+                        way.plot_on_path(path)
+                        layers["bridge_outline"].append(path)
+                        
+                
                     
-                path = drawsvg.Path(stroke_width=path_base_widths[path_type], stroke=path_base_colors[path_type], fill_opacity=0, stroke_opacity=1, stroke_linecap="round")
+                path = drawsvg.Path(stroke_width=path_base_widths[path_type], stroke=path_base_colors[path_type], stroke_linejoin="round", fill_opacity=0, stroke_opacity=1, stroke_linecap="round")
                 way.plot_on_path(path)
                 layers[layer_name].append(path)
                 
+                
+                
+                if not way.ref == None:
+                    x,y = way.get_central_screen_space_coords()
+                    bkgcol = path_base_colors[path_type]
+                    if path_type in outline_types:
+                        bkgcol = "#888888"
+                        
+                    ref_labels.append({
+                            "x": x,
+                            "y": y,
+                            "bkgcol": bkgcol,
+                            "ref": way.ref
+                        })
+                    
+                if "default" in way.names:
+                    consider_labelling = True
+                    if self.zoom_level <= 15:
+                        consider_labelling = False
+                    if self.zoom_level <= 17:
+                        if path_type == "residential" or path_type == "path":
+                            consider_labelling = False
+                    if consider_labelling:
+                        x,y = way.get_central_screen_space_coords()
+                        bkgcol = path_base_colors[path_type]
+                        col = "#ffffff"
+                        if path_type in outline_types:
+                            col = "#888888"
+                            bkgcol = "#888888"
+                            
+                        name_labels.append({
+                                "x": x,
+                                "y": y,
+                                "bkgcol": bkgcol,
+                                "col": col,
+                                "name": way.names["default"],
+                                "curve": path
+                            })
+                    
+                
                 if path_type in outline_types:
-                    path = drawsvg.Path(stroke_width=path_base_widths[path_type] + (1 * rsf), stroke="#888888", fill_opacity=0, stroke_opacity=1, stroke_linecap="round")
+                    path = drawsvg.Path(stroke_width=path_base_widths[path_type] + (1 * rsf), stroke="#888888", stroke_linejoin="round", fill_opacity=0, stroke_opacity=1, stroke_linecap="round")
                     way.plot_on_path(path)
                     layers["road_outlines"].append(path)
                 
             wayct += 1
         
-        path = drawsvg.Path(fill="#ffffff", fill_opacity=1, stroke_opacity=0)
+        
+        kozs = []
+        labelfont = "Transport Heavy"# "Renogare"#"Eurostile"#"Brut Gothic"
+        for prop_label in ref_labels:
+            ok_to_add = True
+            plx = prop_label["x"]
+            ply = prop_label["y"]
+            for koz in kozs:
+                if abs(plx - koz[0]) < 128:
+                    if abs(ply - koz[1]) < 128:
+                        ok_to_add = False
+                        break
+            if ok_to_add:
+                kozs.append((prop_label["x"], prop_label["y"]))
+                layers["label_outlines"].append(drawsvg.Text(prop_label["ref"], font_size=16, x=prop_label["x"], y=prop_label["y"], stroke=prop_label["bkgcol"], stroke_width=8, stroke_linejoin="round", fill=bkgcol, text_anchor="middle", font_family=labelfont, dominant_baseline="middle"))
+                layers["labels"].append(drawsvg.Text(prop_label["ref"], font_size=16, x=prop_label["x"], y=prop_label["y"], fill="#ffffff", text_anchor="middle", font_family=labelfont, dominant_baseline="middle"))
+                
+        labelfont = "Transport Heavy"# "Renogare"#"Eurostile"#"Brut Gothic"
+        for prop_label in name_labels:
+            ok_to_add = True
+            plx = prop_label["x"]
+            ply = prop_label["y"]
+            for koz in kozs:
+                if abs(plx - koz[0]) < 128:
+                    if abs(ply - koz[1]) < 128:
+                        ok_to_add = False
+                        break
+            if ok_to_add:
+                kozs.append((prop_label["x"], prop_label["y"]))
+                #layers["labels"].append(drawsvg.Text(prop_label["name"], font_size=12, fill=prop_label["col"], text_anchor="middle", font_family=labelfont, path=prop_label["curve"], offset="50%", dominant_baseline="middle"))
+                layers["label_outlines"].append(drawsvg.Text(prop_label["name"], font_size=12, x=prop_label["x"], y=prop_label["y"], stroke=prop_label["bkgcol"], stroke_width=4, stroke_linejoin="round", fill=bkgcol, text_anchor="middle", font_family=labelfont, dominant_baseline="middle"))
+                layers["labels"].append(drawsvg.Text(prop_label["name"], font_size=12, x=prop_label["x"], y=prop_label["y"], fill="#ffffff", text_anchor="middle", font_family=labelfont, dominant_baseline="middle"))
+        
+        path = drawsvg.Path(fill=area_base_colors["default"], fill_opacity=1, stroke_opacity=0)
         path.M(*(OSMPoint(self.bound_top, self.bound_left, self).as_xy_coords()))
         path.L(*(OSMPoint(self.bound_top, self.bound_right, self).as_xy_coords()))
         path.L(*(OSMPoint(self.bound_bottom, self.bound_right, self).as_xy_coords()))
@@ -289,4 +536,6 @@ class AreaRenderer:
         self.point_map = {}
         self.ways = {}
         self.highways = []
+        self.areas = []
+        self.otherways = []
         self.scale_factors = {}

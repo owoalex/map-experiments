@@ -16,4 +16,4 @@ export POSTGRES_HOST="localhost"
 export GRIPPY_CONFIG_FILE="../../config/grippymap-devel.json"
 cd tileserver/src
 pwd
-gunicorn -w 1 main:app -b 0.0.0.0
+gunicorn -w 8 main:app -b 0.0.0.0

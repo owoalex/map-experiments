@@ -33,6 +33,10 @@ $ osmosis --read-pbf united_kingdom.osm.pbf --bounding-box top=51.5709 left=-3.3
 $ python3 render.py cardiff.osm --output cardiff.png
 ```
 
+## Get coastlines
+https://osmdata.openstreetmap.de/download/land-polygons-split-3857.zip
+https://osmdata.openstreetmap.de/download/simplified-land-polygons-complete-3857.zip
+
 ## Notes
 
 Create public network first!

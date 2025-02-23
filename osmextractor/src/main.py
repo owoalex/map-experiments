@@ -96,21 +96,30 @@ class OSMPoint:
 
 class OSMWay:
     is_highway = False
-    way_type = "path"
-    bridge = False
+    is_area = False
+    is_bridge = False
+    priority = 0
+    names = None
+    way_type = None
     maxspeed = None
     ref = None
     bounds = None
     olc_codes_list = None
+    olc_codes_list_mr = None
+    olc_codes_list_lr = None
     segments_in_olc_codes = None
     osm_id = None
     
     def __init__(self, osm_id = None):
         self.osm_id = osm_id
         self.points = []
+        self.priority = 0
+        self.names = {}
         self.bounds = [90, -90, 180, -180]
         self.segments_in_olc_codes = {}
         self.olc_codes_list = []
+        self.olc_codes_list_mr = []
+        self.olc_codes_list_lr = []
         self.point_refs = []
     
     def add_point(self, point):
@@ -121,7 +130,7 @@ class OSMWay:
         for pt in self.points[1:]:
             path_object.L(*(pt.as_xy_coords())) # Point
             
-    def calc_path_properties(self, olc_resolution=4):
+    def calc_path_properties(self):
         points = []
         for point in self.points:
             pll = point.as_lat_long()
@@ -135,9 +144,15 @@ class OSMWay:
             if self.bounds[3] < pll[1]:
                 self.bounds[3] = pll[1]
                 
-        for olc in bounds_to_olcs(self.bounds, olc_resolution):
+        for olc in bounds_to_olcs(self.bounds, 8):
             self.olc_codes_list.append(olc)
+        for olc in bounds_to_olcs(self.bounds, 6):
+            self.olc_codes_list_mr.append(olc)
+        for olc in bounds_to_olcs(self.bounds, 4):
+            self.olc_codes_list_lr.append(olc)
         self.olc_codes_list = list(set(self.olc_codes_list))
+        self.olc_codes_list_mr = list(set(self.olc_codes_list_mr))
+        self.olc_codes_list_lr = list(set(self.olc_codes_list_lr))
         self.geo_points = points
         pass
             
@@ -145,8 +160,13 @@ class OSMWay:
         return {
                 "type": self.way_type,
                 "id": self.osm_id,
+                "ref": self.ref,
+                "names": self.names,
                 "is_highway": self.is_highway,
+                "is_area": self.is_area,
                 "max_speed": self.maxspeed,
+                "is_bridge": self.is_bridge,
+                "priority": self.priority,
                 "path": self.geo_points,
                 "bounds": self.bounds,
                 "from": self.geo_points[0],
@@ -159,6 +179,8 @@ class MapImporter:
     point_map = {}
     ways = {}
     olc_map = {}
+    olc_map_mr = {}
+    olc_map_lr = {}
 
     bound_top = 51.5709
     bound_left = -3.3062
@@ -172,7 +194,7 @@ class MapImporter:
     
 
 
-    def load_xml(self, filename, chunk_resolution=4):
+    def load_xml(self, filename):
         print("XML load start")
         with open(filename, "rb") as f:
             for event, element in etree.iterparse(f):
@@ -189,11 +211,61 @@ class MapImporter:
                             if prop.get("k") == "highway":
                                 self.ways[element_id].way_type = prop.get("v")
                                 self.ways[element_id].is_highway = True
-                            if prop.get("k") == "bridge":
-                                self.ways[element_id].bridge = True
-                            if prop.get("k") == "ref":
-                                self.ways[element_id].ref = prop.get("ref")
-                            if prop.get("k") == "maxspeed":
+                                wt = self.ways[element_id].way_type
+                                self.ways[element_id].priority = 4
+                                if wt == "motorway" or wt == "motorway_link":
+                                    self.ways[element_id].priority = 32
+                                if wt == "trunk" or wt == "trunk_link":
+                                    self.ways[element_id].priority = 24
+                                if wt == "primary" or wt == "primary_link":
+                                    self.ways[element_id].priority = 16
+                                if wt == "secondary" or wt == "secondary_link":
+                                    self.ways[element_id].priority = 12
+                                if wt == "tertiary" or wt == "tertiary_link":
+                                    self.ways[element_id].priority = 12
+                                if wt == "unclassified":
+                                    self.ways[element_id].priority = 8
+                                if wt == "residential":
+                                    self.ways[element_id].priority = 6
+                                if wt == "service":
+                                    self.ways[element_id].priority = 6
+                                if wt == "services":
+                                    self.ways[element_id].priority = 24
+                            elif prop.get("k") == "area":
+                                self.ways[element_id].is_area = prop.get("v") == "yes"
+                            elif prop.get("k") == "natural":
+                                self.ways[element_id].way_type = prop.get("v")
+                                self.ways[element_id].priority = 12
+                                if self.ways[element_id].way_type == "wood":
+                                    self.ways[element_id].is_area = True
+                                elif self.ways[element_id].way_type == "heath":
+                                    self.ways[element_id].is_area = True
+                                elif self.ways[element_id].way_type == "grassland":
+                                    self.ways[element_id].is_area = True
+                                elif self.ways[element_id].way_type == "beach":
+                                    self.ways[element_id].is_area = True
+                                elif self.ways[element_id].way_type == "sand":
+                                    self.ways[element_id].is_area = True
+                                elif self.ways[element_id].way_type == "water":
+                                    self.ways[element_id].is_area = True
+                            elif prop.get("k") == "building":
+                                self.ways[element_id].priority = 2
+                                if not prop.get("v") == "no":
+                                    self.ways[element_id].way_type = "building"
+                                self.ways[element_id].is_area = True
+                            elif prop.get("k") == "landuse":
+                                self.ways[element_id].priority = 8
+                                self.ways[element_id].way_type = prop.get("v")
+                                self.ways[element_id].is_area = True
+                            elif prop.get("k") == "bridge":
+                                self.ways[element_id].is_bridge = True
+                            elif prop.get("k") == "ref":
+                                self.ways[element_id].ref = prop.get("v")
+                            elif prop.get("k") == "name":
+                                self.ways[element_id].names["default"] = prop.get("v")
+                            elif prop.get("k").startswith("name:"):
+                                self.ways[element_id].names[prop.get("k")[5:]] = prop.get("v")
+                            elif prop.get("k") == "maxspeed":
                                 maxspeed_raw = prop.get("maxspeed")
                                 maxspeed_ms = None
                                 if not maxspeed_raw is None:
@@ -215,11 +287,53 @@ class MapImporter:
             for ptref in self.ways[way_id].point_refs:
                 if ptref in self.point_map:
                     self.ways[way_id].add_point(self.point_map[ptref])
-            self.ways[way_id].calc_path_properties(chunk_resolution * 2)
+            self.ways[way_id].calc_path_properties()
+            
+            
+            if self.ways[way_id].priority > 8:   
+                for olc_code in self.ways[way_id].olc_codes_list_lr:
+                    if not olc_code in self.olc_map_lr:
+                        self.olc_map_lr[olc_code] = {
+                                "highways": [],
+                                "areas": [],
+                                "other": []
+                            }
+                    if self.ways[way_id].is_highway:
+                        self.olc_map_lr[olc_code]["highways"].append(self.ways[way_id])
+                    elif self.ways[way_id].is_area:
+                        self.olc_map_lr[olc_code]["areas"].append(self.ways[way_id])
+                    else:
+                        self.olc_map_lr[olc_code]["other"].append(self.ways[way_id])
+            
+            if self.ways[way_id].priority > 4:   
+                for olc_code in self.ways[way_id].olc_codes_list_mr:
+                    if not olc_code in self.olc_map_mr:
+                        self.olc_map_mr[olc_code] = {
+                                "highways": [],
+                                "areas": [],
+                                "other": []
+                            }
+                    if self.ways[way_id].is_highway:
+                        self.olc_map_mr[olc_code]["highways"].append(self.ways[way_id])
+                    elif self.ways[way_id].is_area:
+                        self.olc_map_mr[olc_code]["areas"].append(self.ways[way_id])
+                    else:
+                        self.olc_map_mr[olc_code]["other"].append(self.ways[way_id])
+                    
             for olc_code in self.ways[way_id].olc_codes_list:
                 if not olc_code in self.olc_map:
-                    self.olc_map[olc_code] = {"ways": []}
-                self.olc_map[olc_code]["ways"].append(self.ways[way_id])
+                    self.olc_map[olc_code] = {
+                            "highways": [],
+                            "areas": [],
+                            "other": []
+                        }
+                if self.ways[way_id].is_highway:
+                    self.olc_map[olc_code]["highways"].append(self.ways[way_id])
+                elif self.ways[way_id].is_area:
+                    self.olc_map[olc_code]["areas"].append(self.ways[way_id])
+                else:
+                    self.olc_map[olc_code]["other"].append(self.ways[way_id])
+                    
             waypc += 1
             if waypc % 64 == 0:
                 print(str(waypc) + " of " + str(waytot) + " processed")
@@ -230,26 +344,99 @@ class MapImporter:
     def export_to_couchdb(self, couch_base_uri):
         couch = couchbeans.CouchClient(couch_base_uri)
         try:
-            couch.delete_db("grippy_segments")
+            couch.delete_db("grippy_highways")
         except Exception:
             pass
-        couch.create_db("grippy_segments")
+        try:
+            couch.delete_db("grippy_areas")
+        except Exception:
+            pass
+        couch.create_db("grippy_highways")
+        couch.create_db("grippy_areas")
+        olcpc = 0
+        olctot = len(self.olc_map_lr)
+        for olc_code in self.olc_map_lr:
+            sector_highways = []
+            oways = self.olc_map_lr[olc_code]["highways"]
+            for way in oways:
+                sector_highways.append(way.to_dict())
+            sector_areaways = []
+            oways = self.olc_map_lr[olc_code]["areas"]
+            for way in oways:
+                sector_areaways.append(way.to_dict())
+            sector_otherways = []
+            oways = self.olc_map_lr[olc_code]["other"]
+            for way in oways:
+                sector_otherways.append(way.to_dict())
+            doc = {
+                    "highways": sector_highways
+                }
+            couch.put_document("grippy_highways", olc_code, doc)
+            doc = {
+                    "areas": sector_areaways,
+                    "other": sector_otherways
+                }
+            couch.put_document("grippy_areas", olc_code, doc)
+
+            if olcpc % 64 == 0:
+                print(str(olcpc) + " of " + str(olctot) + " low res zones uploaded")
+            olcpc += 1
+        olcpc = 0
+        olctot = len(self.olc_map_mr)
+        for olc_code in self.olc_map_mr:
+            sector_highways = []
+            oways = self.olc_map_mr[olc_code]["highways"]
+            for way in oways:
+                sector_highways.append(way.to_dict())
+            sector_areaways = []
+            oways = self.olc_map_mr[olc_code]["areas"]
+            for way in oways:
+                sector_areaways.append(way.to_dict())
+            sector_otherways = []
+            oways = self.olc_map_mr[olc_code]["other"]
+            for way in oways:
+                sector_otherways.append(way.to_dict())
+            doc = {
+                    "highways": sector_highways
+                }
+            couch.put_document("grippy_highways", olc_code, doc)
+            doc = {
+                    "areas": sector_areaways,
+                    "other": sector_otherways
+                }
+            couch.put_document("grippy_areas", olc_code, doc)
+
+            if olcpc % 64 == 0:
+                print(str(olcpc) + " of " + str(olctot) + " medium res zones uploaded")
+            olcpc += 1
         olcpc = 0
         olctot = len(self.olc_map)
         for olc_code in self.olc_map:
-            oways = self.olc_map[olc_code]["ways"]
-            sector_ways = []
+            sector_highways = []
+            oways = self.olc_map[olc_code]["highways"]
             for way in oways:
-                sector_ways.append(way.to_dict())
+                sector_highways.append(way.to_dict())
+            sector_areaways = []
+            oways = self.olc_map[olc_code]["areas"]
+            for way in oways:
+                sector_areaways.append(way.to_dict())
+            sector_otherways = []
+            oways = self.olc_map[olc_code]["other"]
+            for way in oways:
+                sector_otherways.append(way.to_dict())
             doc = {
-                    "ways": sector_ways
+                    "highways": sector_highways
                 }
-            #print("Exported zone " + olc_code)
-            
+            couch.put_document("grippy_highways", olc_code, doc)
+            doc = {
+                    "areas": sector_areaways,
+                    "other": sector_otherways
+                }
+            couch.put_document("grippy_areas", olc_code, doc)
+
             olcpc += 1
             if olcpc % 64 == 0:
-                print(str(olcpc) + " of " + str(olctot) + " zones uploaded")
-            couch.put_document("grippy_segments", olc_code, doc)
+                print(str(olcpc) + " of " + str(olctot) + " high res zones uploaded")
             #print(olc_code)
 
     def calc_scale_factors(self, bt, bl, bb, br):
